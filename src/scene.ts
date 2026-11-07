@@ -109,6 +109,8 @@ export class SceneViewer {
   private editMode = false;
   private resizeObserver?: ResizeObserver;
   private cameraTween?: CameraTween;
+  private sharedMaterialNames = new Set<string>();
+  private sharedMaterials = new Map<string, THREE.Material>();
   private readonly startedAt = performance.now();
   private firstFrameMs?: number;
   private readonly frameTimes: number[] = [];
@@ -204,8 +206,33 @@ export class SceneViewer {
   private async loadGltf(bundle: ModelBundle, path: string): Promise<THREE.Object3D> {
     const data = this.getFile(bundle, path);
     return new Promise((resolve, reject) => {
-      this.loader.parse(data, '', (gltf) => resolve(gltf.scene), (error) => reject(error instanceof Error ? error : new Error(`GLB 解析失败：${path}`)));
+      this.loader.parse(data, '', (gltf) => {
+        this.dedupeSharedMaterials(gltf.scene);
+        resolve(gltf.scene);
+      }, (error) => reject(error instanceof Error ? error : new Error(`GLB 解析失败：${path}`)));
     });
+  }
+
+  private dedupeSharedMaterials(object: THREE.Object3D): void {
+    if (!this.sharedMaterialNames.size) return;
+    const duplicates = new Set<THREE.Material>();
+    object.traverse((node) => {
+      if (!(node as THREE.Mesh).isMesh) return;
+      const mesh = node as THREE.Mesh;
+      const materials = materialList(mesh.material);
+      const deduped = materials.map((material) => {
+        if (!material.name || !this.sharedMaterialNames.has(material.name)) return material;
+        const canonical = this.sharedMaterials.get(material.name);
+        if (!canonical) {
+          this.sharedMaterials.set(material.name, material);
+          return material;
+        }
+        if (canonical !== material) duplicates.add(material);
+        return canonical;
+      });
+      mesh.material = Array.isArray(mesh.material) ? deduped : deduped[0];
+    });
+    duplicates.forEach((material) => material.dispose());
   }
 
   private async buildContent(bundle: ModelBundle, items: FurnitureState[]): Promise<SceneContent> {
@@ -255,6 +282,7 @@ export class SceneViewer {
     } catch (error) {
       this.disposeObject(root);
       prototypes.forEach((prototype) => this.disposeObject(prototype));
+      this.sharedMaterials.forEach((material) => material.dispose());
       throw error;
     }
   }
@@ -300,10 +328,21 @@ export class SceneViewer {
   }
 
   async loadBundle(bundle: ModelBundle, items: FurnitureState[]): Promise<void> {
-    const next = await this.buildContent(bundle, items);
+    const previousSharedNames = this.sharedMaterialNames;
+    const previousSharedMaterials = this.sharedMaterials;
+    this.sharedMaterialNames = new Set((bundle.manifest.sharedMaterialNames ?? []).filter(Boolean));
+    this.sharedMaterials = new Map();
+    let next: SceneContent;
+    try {
+      next = await this.buildContent(bundle, items);
+    } catch (error) {
+      this.sharedMaterialNames = previousSharedNames;
+      this.sharedMaterials = previousSharedMaterials;
+      throw error;
+    }
     if (this.content) {
       this.scene.remove(this.content.root);
-      this.disposeContent(this.content);
+      this.disposeContent(this.content, previousSharedMaterials);
     }
     this.content = next;
     this.bundle = bundle;
@@ -605,9 +644,10 @@ export class SceneViewer {
     });
   }
 
-  private disposeContent(content: SceneContent): void {
+  private disposeContent(content: SceneContent, sharedMaterials = this.sharedMaterials): void {
     this.disposeObject(content.root);
     content.prototypes.forEach((prototype) => this.disposeObject(prototype));
+    sharedMaterials.forEach((material) => material.dispose());
   }
 
   dispose(): void {

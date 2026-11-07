@@ -77,6 +77,7 @@ export interface Manifest {
   variants: VariantSpec[];
   furniture: FurnitureSpec[];
   overview: OverviewCamera;
+  sharedMaterialNames?: string[] | null;
   materials?: MaterialSpec[];
   info?: string[];
 }

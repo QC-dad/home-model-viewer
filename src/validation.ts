@@ -102,6 +102,7 @@ export function validateManifest(value: unknown, files: Record<string, ArrayBuff
   push(errors, Array.isArray(value.furniture), 'furniture 必须是数组');
   if (!isObject(value.overview)) errors.push('overview 缺失');
   else validateCamera(value.overview, 'overview', errors);
+  if (value.sharedMaterialNames !== undefined && value.sharedMaterialNames !== null) push(errors, Array.isArray(value.sharedMaterialNames) && value.sharedMaterialNames.every(isString), 'sharedMaterialNames 必须是字符串数组');
   if (errors.length > 0) return { ok: false, errors, warnings };
 
   const manifest = value as unknown as Manifest;
