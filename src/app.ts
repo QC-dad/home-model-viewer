@@ -71,7 +71,7 @@ export class ViewerApp {
         <header class="topbar">
           <div class="brand-lockup"><div class="brand-mark">⌂</div><div><h1>离线户型查看器</h1><p>本地模型 · 不依赖网络</p></div></div>
           <div class="topbar-actions">
-            <span class="offline-badge"><span class="status-dot"></span>离线就绪</span>
+            <span class="offline-badge"><span class="status-dot"></span><span data-role="offline-status">准备离线</span></span>
             <button class="button button-ghost" data-action="import">导入模型 ZIP</button>
             <button class="button button-accent" data-action="export-layout" disabled>备份布局</button>
           </div>
@@ -85,7 +85,7 @@ export class ViewerApp {
             <div class="reference-drawer hidden" data-role="reference"><div class="drawer-head"><strong data-role="reference-title">房间参考</strong><button class="icon-button" data-action="close-reference">×</button></div><img data-role="reference-image" alt="房间参考图" /><p data-role="reference-meta"></p></div>
           </section>
         </main>
-        <div class="mobile-actions"><button data-action="import">导入</button><button data-action="overview">总览</button><button data-action="toggle-edit">编辑</button><button data-action="export-layout" disabled>备份</button></div>
+        <div class="mobile-actions"><button data-action="import">导入</button><button data-action="toggle-rooms">房间</button><button data-action="toggle-edit">编辑</button><button data-action="export-layout" disabled>备份</button><button data-action="toggle-tools">工具</button></div>
         <div class="toast" data-role="toast" role="status" aria-live="polite"></div>
         <input type="file" accept=".zip,application/zip" hidden data-role="file-input" />
         <input type="file" accept=".json,application/json" hidden data-role="layout-input" />
@@ -115,6 +115,11 @@ export class ViewerApp {
   }
 
   private bindStaticEvents(): void {
+    window.addEventListener('offline-status', event => {
+      const text = (event as CustomEvent<string>).detail;
+      const status = this.root.querySelector('[data-role="offline-status"]');
+      if (status) status.textContent = text;
+    });
     this.root.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
       const actionNode = target.closest<HTMLElement>('[data-action]');
@@ -136,11 +141,14 @@ export class ViewerApp {
 
   private handleAction(action: string, node: HTMLElement): void {
     switch (action) {
+      case 'toggle-rooms': this.root.classList.remove('tools-open'); this.root.classList.toggle('rooms-open'); break;
+      case 'toggle-tools': this.root.classList.remove('rooms-open'); this.root.classList.toggle('tools-open'); break;
       case 'import': this.fileInput.click(); break;
       case 'export-layout': this.exportLayout(); break;
       case 'import-layout': this.layoutInput.click(); break;
       case 'overview': this.editMode = false; this.viewer.setEditMode(false); this.viewMode = 'whole'; this.viewer.setViewMode('whole'); this.viewer.focusOverview(); this.renderSidebar(); break;
       case 'toggle-edit':
+        this.root.classList.remove('rooms-open', 'tools-open');
         this.editMode = !this.editMode;
         if (this.editMode && this.viewMode === 'whole' && this.bundle) {
           this.viewMode = this.bundle.manifest.floors[0].id;
@@ -355,6 +363,7 @@ export class ViewerApp {
     if (!room) return;
     this.editMode = false;
     this.viewer.setEditMode(false);
+    this.root.classList.remove('rooms-open', 'tools-open');
     this.viewMode = room.floorId;
     this.viewer.focusRoom(roomId);
     this.renderSidebar();

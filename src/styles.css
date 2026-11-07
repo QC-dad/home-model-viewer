@@ -142,11 +142,12 @@ select:focus, input[type=number]:focus { border-color: var(--accent); box-shadow
   .topbar { min-height: 64px; padding: 11px 14px; }
   .brand-mark { width: 32px; height: 32px; border-radius: 10px; font-size: 18px; }
   .brand-lockup h1 { font-size: 14px; }
-  .brand-lockup p, .offline-badge, .topbar-actions .button-ghost { display: none; }
+  .brand-lockup p, .topbar-actions .button-ghost { display: none; }
+  .offline-badge { display: flex; font-size: 9px; gap: 4px; }
   .topbar-actions { gap: 6px; }
   .topbar-actions .button { min-height: 31px; padding: 0 9px; font-size: 10px; }
   .workspace { display: block; position: relative; }
-  .viewport-panel { height: calc(100dvh - 64px - 58px); min-height: 370px; }
+  .viewport-panel { height: 100%; min-height: 0; }
   .sidebar { position: absolute; z-index: 3; top: 10px; left: 10px; right: 10px; max-height: 46px; border: 0; overflow: visible; background: transparent; pointer-events: none; }
   .sidebar-scroll { height: auto; max-height: min(68dvh, 620px); padding: 0; overflow-y: auto; pointer-events: auto; }
   .sidebar-scroll > .panel, .sidebar-scroll > .info-panel, .sidebar-scroll > .empty-sidebar { display: none; }
@@ -157,9 +158,16 @@ select:focus, input[type=number]:focus { border-color: var(--accent); box-shadow
   .sidebar-scroll > .editor-panel { display: block; position: fixed; z-index: 5; left: 10px; right: 10px; bottom: 68px; max-height: 56dvh; overflow-y: auto; transform: translateY(calc(100% + 78px)); transition: transform .25s ease; pointer-events: none; }
   .sidebar-scroll > .editor-panel:focus-within, .sidebar-scroll > .editor-panel:has(.selected-title) { transform: translateY(0); pointer-events: auto; }
   .sidebar-scroll > .panel:nth-child(3) { display: none; }
-  .canvas-toolbar { top: 72px; left: 13px; }
+  .canvas-toolbar { top: 112px; left: 13px; }
+  #app.rooms-open .sidebar-scroll > .panel:nth-child(3) { display: block; margin-top: 8px; }
+  #app.tools-open .sidebar-scroll > .panel { display: block; }
+  #app.tools-open .sidebar-scroll > .model-panel { display: none; }
+  #app.tools-open .sidebar-scroll > .editor-panel { position: static; transform: none; pointer-events: auto; max-height: none; }
+  #app.tools-open .sidebar-scroll > .panel:nth-child(2) .switch-row { display: flex; }
+  #app.tools-open .sidebar-scroll, #app.rooms-open .sidebar-scroll { background: var(--paper); border-radius: 14px; box-shadow: var(--shadow); }
+  .section-controls input[type=range] { width: 100%; min-height: 28px; }
   .canvas-tip { display: none; }
-  .mobile-actions { min-height: 58px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgba(255,253,248,.92); }
+  .mobile-actions { min-height: 58px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: rgba(255,253,248,.92); }
   .mobile-actions button { border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 11px; }
   .mobile-actions button:hover, .mobile-actions button:active { background: var(--cream-deep); color: var(--slate); }
   .empty-state { padding-bottom: 64px; }

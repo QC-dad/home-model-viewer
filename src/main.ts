@@ -7,8 +7,10 @@ new ViewerApp(root);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {
-      // 本地开发服务器没有构建产物时，继续保持在线预览功能。
+    navigator.serviceWorker.register('./sw.js').then(() => navigator.serviceWorker.ready).then(() => {
+      window.dispatchEvent(new CustomEvent('offline-status', {detail: '离线就绪'}));
+    }).catch(() => {
+      window.dispatchEvent(new CustomEvent('offline-status', {detail: '当前在线'}));
     });
   });
 }
