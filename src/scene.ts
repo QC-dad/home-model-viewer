@@ -59,7 +59,7 @@ interface CameraTween {
 
 const FURNITURE_HIGHLIGHT = new THREE.Color('#bd8d56');
 const SECTION_COLOR = new THREE.Color('#f5eddc');
-const WHITE_COLOR = new THREE.Color('#e8e1d5');
+const WHITE_COLOR = new THREE.Color('#d8d2c7');
 
 function cloneArrayBuffer(data: ArrayBuffer): ArrayBuffer {
   return data.slice(0);
@@ -70,11 +70,11 @@ function materialList(material: THREE.Material | THREE.Material[]): THREE.Materi
 }
 
 function createWhiteMaterial(source: THREE.Material): THREE.MeshStandardMaterial {
-  const material = new THREE.MeshStandardMaterial({ color: WHITE_COLOR, roughness: 0.84, metalness: 0, side: source.side });
+  const material = new THREE.MeshStandardMaterial({ color: WHITE_COLOR, roughness: 0.84, metalness: 0, side: source.side, envMapIntensity: 0.2 });
   material.name = `${source.name || 'material'}:white`;
   material.vertexColors = false;
-  material.transparent = false;
-  material.opacity = 1;
+  material.transparent = source.transparent;
+  material.opacity = source.transparent ? source.opacity : 1;
   material.alphaTest = 0;
   material.depthWrite = true;
   return material;
@@ -162,8 +162,8 @@ export class SceneViewer {
     this.scene.environment = pmrem.fromScene(roomEnvironment, 0.04).texture;
     roomEnvironment.dispose();
     pmrem.dispose();
-    this.scene.add(new THREE.HemisphereLight('#fff6df', '#899394', 1.0));
-    const key = new THREE.DirectionalLight('#fff1d8', 3.0);
+    this.scene.add(new THREE.HemisphereLight('#fff6df', '#899394', 0.55));
+    const key = new THREE.DirectionalLight('#fff1d8', 2.0);
     key.position.set(-8, 15, 13);
     key.target.position.set(0, 1.3, 1);
     key.castShadow = true;
@@ -320,6 +320,7 @@ export class SceneViewer {
         const group = new THREE.Group();
         group.name = `floor:${floor.id}`;
         const base = await this.loadGltf(bundle, floor.asset);
+        base.traverse(node => { node.userData.floorCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), floor.elevation + 1.4); });
         this.prepareObjectMaterials(base);
         group.add(base);
         let ceiling: THREE.Object3D | undefined;
@@ -595,8 +596,8 @@ export class SceneViewer {
         return entry.original;
       });
       active.forEach((material) => {
-        material.clippingPlanes = this.renderMode === 'section' ? [this.sectionPlane] : [];
-        material.clipShadows = this.renderMode === 'section';
+        material.clippingPlanes = this.renderMode === 'section' ? [this.sectionPlane] : this.viewMode !== 'whole' && !this.roomView && mesh.userData.floorCutPlane ? [mesh.userData.floorCutPlane] : [];
+        material.clipShadows = material.clippingPlanes.length > 0;
       });
       mesh.material = mesh.userData.viewerMaterialArray ? active : active[0];
     });
@@ -630,6 +631,7 @@ export class SceneViewer {
     this.roomView = undefined;
     this.viewMode = mode;
     this.applyVisibility();
+    this.applyRenderMode();
     if (this.renderMode === 'section') this.setSection(this.sectionDirection, this.sectionPosition);
   }
 
@@ -640,6 +642,7 @@ export class SceneViewer {
     if (mode === 'section') {
       this.roomView = undefined;
       this.applyVisibility();
+      this.applyRenderMode();
       this.setSection(this.sectionDirection, this.sectionPosition, true);
     } else if (this.sectionDetail) this.sectionDetail.visible = false;
   }
@@ -700,6 +703,7 @@ export class SceneViewer {
       this.camera.updateProjectionMatrix();
       this.roomView = undefined;
       this.applyVisibility();
+      this.applyRenderMode();
       this.focusEditTopDown();
       this.controls.enableRotate = false;
     } else {
@@ -753,6 +757,7 @@ export class SceneViewer {
     this.setViewMode(room.floorId);
     this.roomView = room.id === 'garden' ? undefined : room.floorId;
     this.applyVisibility();
+    this.applyRenderMode();
     this.camera.fov = room.camera.fov ?? 42;
     this.camera.updateProjectionMatrix();
     this.transitionCamera(new THREE.Vector3().fromArray(room.camera.position), new THREE.Vector3().fromArray(room.camera.target), room.camera.fov ?? 42);
