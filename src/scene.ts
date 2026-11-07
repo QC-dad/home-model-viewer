@@ -744,7 +744,7 @@ export class SceneViewer {
     const center = new THREE.Vector3((floor.bounds[0] + floor.bounds[2]) / 2, floor.elevation, (floor.bounds[1] + floor.bounds[3]) / 2);
     const span = Math.max(floor.bounds[2] - floor.bounds[0], floor.bounds[3] - floor.bounds[1], 4);
     this.camera.fov = 42;
-    const position = center.clone().add(new THREE.Vector3(span * 1.08, span * 0.92, span * 1.08));
+    const position = center.clone().add(new THREE.Vector3(-span * 0.82, span * 0.95, span * 0.82));
     this.camera.up.set(0, 1, 0);
     this.controls.enableRotate = true;
     this.camera.updateProjectionMatrix();
