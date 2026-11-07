@@ -88,9 +88,16 @@ export class ViewerStorage {
     return this.enqueueWrite(async () => {
       const db = await this.open();
       const transaction = db.transaction([PROJECT_STORE, LAYOUT_STORE], 'readwrite');
-      transaction.objectStore(PROJECT_STORE).put({ key: PROJECT_KEY, bundle } satisfies StoredProject);
-      transaction.objectStore(LAYOUT_STORE).put({ key: `${layout.modelId}:${layout.modelVersion}`, layout } satisfies StoredLayout);
-      await transactionComplete(transaction);
+      const complete = transactionComplete(transaction);
+      try {
+        transaction.objectStore(PROJECT_STORE).put({ key: PROJECT_KEY, bundle } satisfies StoredProject);
+        transaction.objectStore(LAYOUT_STORE).put({ key: `${layout.modelId}:${layout.modelVersion}`, layout } satisfies StoredLayout);
+      } catch (error) {
+        transaction.abort();
+        await complete.catch(() => undefined);
+        throw error;
+      }
+      await complete;
     });
   }
 

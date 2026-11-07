@@ -2,7 +2,7 @@ import type { Manifest, ModelBundle, RenderMode, ViewMode, FurnitureState, Vec3T
 import { manifestToLayout } from './types';
 import { SceneViewer } from './scene';
 import { viewerStorage } from './storage';
-import { layoutToState, stateToLayout, updateItem, snapshotsEqual, placementInsideFloor, layoutIssues } from './layout';
+import { layoutToState, stateToLayout, updateItem, snapshotsEqual, placementInsideFloor, detectBoundaryIssues, layoutIssues } from './layout';
 import { parseBundleZip, validateLayout } from './validation';
 
 function escapeHtml(value: unknown): string {
@@ -49,6 +49,8 @@ export class ViewerApp {
   private selectedId?: string;
   private viewMode: ViewMode = 'whole';
   private renderMode: RenderMode = 'material';
+  private sectionDirection = 'x';
+  private sectionPosition = 50;
   private editMode = false;
   private environmentVisible = true;
   private exteriorVisible = true;
@@ -109,7 +111,7 @@ export class ViewerApp {
     });
     this.bindStaticEvents();
     this.renderSidebar();
-    void this.restore();
+    void this.enqueue(() => this.restore());
   }
 
   private bindStaticEvents(): void {
@@ -137,11 +139,18 @@ export class ViewerApp {
       case 'import': this.fileInput.click(); break;
       case 'export-layout': this.exportLayout(); break;
       case 'import-layout': this.layoutInput.click(); break;
-      case 'overview': this.viewMode = 'whole'; this.viewer.setViewMode('whole'); this.viewer.focusOverview(); this.renderSidebar(); break;
-      case 'toggle-edit': this.editMode = !this.editMode; this.viewer.setEditMode(this.editMode); this.renderSidebar(); break;
+      case 'overview': this.editMode = false; this.viewer.setEditMode(false); this.viewMode = 'whole'; this.viewer.setViewMode('whole'); this.viewer.focusOverview(); this.renderSidebar(); break;
+      case 'toggle-edit':
+        this.editMode = !this.editMode;
+        if (this.editMode && this.viewMode === 'whole' && this.bundle) {
+          this.viewMode = this.bundle.manifest.floors[0].id;
+          this.viewer.setViewMode(this.viewMode);
+        }
+        this.viewer.setEditMode(this.editMode); this.renderSidebar(); break;
       case 'undo': this.undo(); break;
       case 'reset-room': this.resetRoom(node.dataset.roomId); break;
       case 'rotate90': this.rotateSelected(); break;
+      case 'set-section-direction': this.sectionDirection = node.dataset.direction ?? 'x'; this.viewer.setSection(this.sectionDirection, this.sectionPosition, true); this.renderSidebar(); break;
       case 'set-render': this.setRenderMode(node.dataset.mode as RenderMode); break;
       case 'set-view': this.setViewMode(node.dataset.mode as ViewMode); break;
       case 'focus-room': this.focusRoom(node.dataset.roomId); break;
@@ -244,6 +253,8 @@ export class ViewerApp {
 
   private commit(next: FurnitureState[], options: { pushUndo?: boolean; save?: boolean } = {}): void {
     if (snapshotsEqual(this.items, next)) return;
+    const outside = this.bundle ? detectBoundaryIssues(next, this.bundle.manifest) : [];
+    if (outside.length) { this.showToast(outside[0].message, 'warning'); this.renderSidebar(); return; }
     if (options.pushUndo !== false) {
       this.undoStack.push(this.layoutSnapshot());
       if (this.undoStack.length > 60) this.undoStack.shift();
@@ -266,7 +277,7 @@ export class ViewerApp {
       if (this.undoStack.length > 60) this.undoStack.shift();
       this.dragHistory = true;
     }
-    if (!placementInsideFloor(position, variant.size, item.rotation, floor.bounds)) {
+    if (!placementInsideFloor(position, variant.size, item.rotation, floor.bounds, floor.polygon)) {
       this.showToast('家具不能拖出当前楼层边界', 'warning');
       return;
     }
@@ -325,7 +336,10 @@ export class ViewerApp {
   private setViewMode(mode: ViewMode): void {
     this.viewMode = mode;
     this.viewer.setViewMode(mode);
-    if (mode !== 'whole') this.viewer.focusFloor(mode);
+    if (this.editMode) this.viewer.setEditMode(true);
+    else if (this.renderMode === 'section') this.viewer.setSection(this.sectionDirection, this.sectionPosition, true);
+    else if (mode !== 'whole') this.viewer.focusFloor(mode);
+    else this.viewer.focusOverview();
     this.renderSidebar();
   }
 
@@ -339,6 +353,8 @@ export class ViewerApp {
     if (!roomId) return;
     const room = this.bundle?.manifest.rooms.find((candidate) => candidate.id === roomId);
     if (!room) return;
+    this.editMode = false;
+    this.viewer.setEditMode(false);
     this.viewMode = room.floorId;
     this.viewer.focusRoom(roomId);
     this.renderSidebar();
@@ -413,7 +429,10 @@ export class ViewerApp {
   private toggleRuntime(): void {
     this.showRuntime = !this.showRuntime;
     window.clearInterval(this.runtimeTimer);
-    if (this.showRuntime) this.runtimeTimer = window.setInterval(() => this.renderSidebar(), 1000);
+    if (this.showRuntime) this.runtimeTimer = window.setInterval(() => {
+      const panel = this.sidebar.querySelector('.runtime-panel');
+      if (panel) panel.outerHTML = this.renderRuntimePanel();
+    }, 1000);
     this.renderSidebar();
   }
 
@@ -434,7 +453,7 @@ export class ViewerApp {
     const statusCount = manifest.materials?.length ?? 0;
     this.sidebar.innerHTML = `
       <section class="panel model-panel"><div class="panel-heading"><span class="eyebrow">当前模型</span><span class="model-ok">本地</span></div><h2>${escapeHtml(manifest.name)}</h2><dl class="meta-grid"><div><dt>版本</dt><dd>${escapeHtml(manifest.modelVersion)}</dd></div><div><dt>楼层</dt><dd>${manifest.floors.length}</dd></div><div><dt>房间</dt><dd>${manifest.rooms.length}</dd></div><div><dt>家具</dt><dd>${manifest.furniture.length}</dd></div></dl><p class="muted small">导入于 ${formatDate(bundle.importedAt)} · ${Object.keys(bundle.files).length} 个本地文件</p></section>
-      <section class="panel"><div class="panel-heading"><h3>场景</h3><button class="text-button" data-action="overview">回总览</button></div><div class="segmented floors">${['whole', ...manifest.floors.map((floor) => floor.id)].map((mode) => `<button class="segment ${this.viewMode === mode ? 'active' : ''}" data-action="set-view" data-mode="${escapeHtml(mode)}">${mode === 'whole' ? '全屋' : escapeHtml(manifest.floors.find((floor) => floor.id === mode)?.name ?? mode)}</button>`).join('')}</div><div class="mode-row"><button class="mode-chip ${this.renderMode === 'material' ? 'active' : ''}" data-action="set-render" data-mode="material">材质</button><button class="mode-chip ${this.renderMode === 'white' ? 'active' : ''}" data-action="set-render" data-mode="white">白模</button><button class="mode-chip ${this.renderMode === 'section' ? 'active' : ''}" data-action="set-render" data-mode="section">剖切</button></div><label class="switch-row"><span>环境 / 庭院</span><input type="checkbox" data-action="toggle-environment" ${this.environmentVisible ? 'checked' : ''}/><i></i></label><label class="switch-row"><span>外围遮挡</span><input type="checkbox" data-action="toggle-exterior" ${this.exteriorVisible ? 'checked' : ''}/><i></i></label></section>
+      <section class="panel"><div class="panel-heading"><h3>场景</h3><button class="text-button" data-action="overview">回总览</button></div><div class="segmented floors">${['whole', ...manifest.floors.map((floor) => floor.id)].map((mode) => `<button class="segment ${this.viewMode === mode ? 'active' : ''}" data-action="set-view" data-mode="${escapeHtml(mode)}">${mode === 'whole' ? '全屋' : escapeHtml(manifest.floors.find((floor) => floor.id === mode)?.name ?? mode)}</button>`).join('')}</div><div class="mode-row"><button class="mode-chip ${this.renderMode === 'material' ? 'active' : ''}" data-action="set-render" data-mode="material">材质</button><button class="mode-chip ${this.renderMode === 'white' ? 'active' : ''}" data-action="set-render" data-mode="white">白模</button><button class="mode-chip ${this.renderMode === 'section' ? 'active' : ''}" data-action="set-render" data-mode="section">剖切</button></div>${this.renderMode === 'section' ? `<div class="section-controls"><div class="mode-row">${[['x','从右'],['-x','从左'],['z','从前'],['-z','从后']].map(([direction,label]) => `<button class="mode-chip ${this.sectionDirection === direction ? 'active' : ''}" data-action="set-section-direction" data-direction="${direction}">${label}</button>`).join('')}</div><label class="field-label">剖切位置 <input aria-label="剖切位置" type="range" min="0" max="100" value="${this.sectionPosition}" data-action="section-position" /></label></div>` : ''}<label class="switch-row"><span>环境 / 庭院</span><input type="checkbox" data-action="toggle-environment" ${this.environmentVisible ? 'checked' : ''}/><i></i></label><label class="switch-row"><span>外围遮挡</span><input type="checkbox" data-action="toggle-exterior" ${this.exteriorVisible ? 'checked' : ''}/><i></i></label></section>
       <section class="panel"><div class="panel-heading"><h3>房间预设</h3><span class="muted small">点击定位</span></div><div class="room-list">${manifest.rooms.map((room) => `<div class="room-row"><button class="room-name ${this.viewMode === room.floorId ? '' : ''}" data-action="focus-room" data-room-id="${escapeHtml(room.id)}"><span>${escapeHtml(room.name)}</span><small>${escapeHtml(manifest.floors.find((floor) => floor.id === room.floorId)?.name ?? room.floorId)}</small></button>${room.reference ? `<button class="ref-button" data-action="show-reference" data-room-id="${escapeHtml(room.id)}" title="查看参考图">▧</button>` : ''}</div>`).join('')}</div></section>
       <section class="panel editor-panel"><div class="panel-heading"><h3>布局编辑</h3><button class="edit-toggle ${this.editMode ? 'active' : ''}" data-action="toggle-edit">${this.editMode ? '退出编辑' : '开启编辑'}</button></div><div class="edit-actions"><button class="button button-small" data-action="undo" ${this.undoStack.length ? '' : 'disabled'}>↶ 撤销</button><button class="button button-small" data-action="import-layout">恢复 JSON</button></div>${selected ? this.renderInspector(selected, selectedVariant, selectedRoom, categories) : '<p class="muted small editor-hint">开启编辑后，在场景中点击家具。可拖动、旋转、替换同类别规格。</p>'}</section>
       <section class="panel status-panel"><div class="panel-heading"><h3>参考与状态</h3><span class="status-pill">${statusCount ? `${statusCount} 条材质记录` : '无材质表'}</span></div>${manifest.info?.length ? `<ul class="info-list">${manifest.info.slice(0, 4).map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>` : '<p class="muted small">模型包未提供说明文字。</p>'}${issues.length ? `<div class="issues"><strong>布局提醒 ${issues.length}</strong><p>${escapeHtml(issues.slice(0, 2).map((issue) => issue.message).join('；'))}${issues.length > 2 ? '…' : ''}</p></div>` : '<p class="ok-line">✓ 当前布局无边界或重叠提醒</p>'}<button class="text-button runtime-toggle" data-action="toggle-runtime">${this.showRuntime ? '隐藏运行信息' : '运行信息'}</button>${this.showRuntime ? this.renderRuntimePanel() : ''}</section>
@@ -444,7 +463,7 @@ export class ViewerApp {
 
   private renderRuntimePanel(): string {
     const stats = this.viewer.getRuntimeStats();
-    return `<div class="runtime-panel"><div><span>滚动 FPS</span><strong>${stats.fps}</strong></div><div><span>三角面</span><strong>${stats.triangles.toLocaleString('zh-CN')}</strong></div><div><span>绘制调用</span><strong>${stats.calls}</strong></div><p>首帧 ${stats.firstFrameMs === undefined ? '计时中' : `${Math.round(stats.firstFrameMs)} ms`} · 以当前设备为准</p></div>`;
+    return `<div class="runtime-panel"><div><span>滚动 FPS</span><strong>${stats.fps}</strong></div><div><span>渲染三角面</span><strong>${stats.triangles.toLocaleString('zh-CN')}</strong></div><div><span>绘制调用</span><strong>${stats.calls}</strong></div><p>模型解析至首帧 ${stats.firstFrameMs === undefined ? '计时中' : `${Math.round(stats.firstFrameMs)} ms`} · 以当前设备为准</p></div>`;
   }
 
   private renderInspector(item: FurnitureState, variant: Manifest['variants'][number] | undefined, room: Manifest['rooms'][number] | undefined, categories: string[]): string {
@@ -454,6 +473,10 @@ export class ViewerApp {
   }
 
   private bindDynamicInputs(): void {
+    this.sidebar.querySelector<HTMLInputElement>('[data-action="section-position"]')?.addEventListener('input', event => {
+      this.sectionPosition = Number((event.target as HTMLInputElement).value);
+      this.viewer.setSection(this.sectionDirection, this.sectionPosition);
+    });
     this.sidebar.querySelectorAll<HTMLInputElement>('input[data-action="toggle-environment"], input[data-action="toggle-exterior"]').forEach((input) => {
       input.addEventListener('change', () => this.handleAction(input.dataset.action ?? '', input));
     });

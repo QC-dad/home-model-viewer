@@ -1,7 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { createSectionDetail } from './section';
 import type { ModelBundle, RenderMode, Vec3Tuple, ViewMode } from './types';
 import type { FurnitureState } from './types';
 
@@ -89,6 +95,8 @@ export class SceneViewer {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
   readonly controls: OrbitControls;
+  private readonly composer: EffectComposer;
+  private readonly ao: SSAOPass;
   private readonly canvas: HTMLCanvasElement;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
@@ -107,29 +115,76 @@ export class SceneViewer {
   private environmentVisible = true;
   private exteriorVisible = true;
   private editMode = false;
+  private roomView?: string;
   private resizeObserver?: ResizeObserver;
   private cameraTween?: CameraTween;
   private sharedMaterialNames = new Set<string>();
   private sharedMaterials = new Map<string, THREE.Material>();
-  private readonly startedAt = performance.now();
+  private startedAt = performance.now();
   private firstFrameMs?: number;
+  private loading = false;
+  private slowSince?: number;
+  private qualityStep = 0;
+  private sectionDetail?: THREE.Group;
+  private sectionTimer?: number;
+  private sectionDirection = 'x';
+  private sectionPosition = 50;
   private readonly frameTimes: number[] = [];
+  private readonly contactTexture = (() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const context = canvas.getContext('2d')!;
+    const gradient = context.createRadialGradient(64, 64, 12, 64, 64, 64);
+    gradient.addColorStop(0, 'rgba(45,35,25,.25)');
+    gradient.addColorStop(.62, 'rgba(45,35,25,.12)');
+    gradient.addColorStop(1, 'rgba(45,35,25,0)');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(canvas);
+  })();
 
   constructor(canvas: HTMLCanvasElement, callbacks: SceneCallbacks = {}) {
     this.canvas = canvas;
     this.callbacks = callbacks;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.86;
-    this.renderer.setClearColor('#e6e0d6');
+    this.renderer.toneMappingExposure = 0.92;
+    this.renderer.setClearColor('#f2efe8');
     this.renderer.localClippingEnabled = true;
-    this.scene.background = new THREE.Color('#e6e0d6');
-    this.scene.add(new THREE.HemisphereLight('#fffaf0', '#68757a', 1.35));
-    const key = new THREE.DirectionalLight('#fff8e7', 1.7);
-    key.position.set(4, 9, 6);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.scene.background = new THREE.Color('#f2efe8');
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const roomEnvironment = new RoomEnvironment();
+    this.scene.environment = pmrem.fromScene(roomEnvironment, 0.04).texture;
+    roomEnvironment.dispose();
+    pmrem.dispose();
+    this.scene.add(new THREE.HemisphereLight('#fff6df', '#899394', 1.0));
+    const key = new THREE.DirectionalLight('#fff1d8', 3.0);
+    key.position.set(-8, 15, 13);
+    key.target.position.set(0, 1.3, 1);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    Object.assign(key.shadow.camera, {left: -18, right: 18, top: 18, bottom: -18, near: 0.5, far: 55});
+    key.shadow.bias = -0.00015;
+    key.shadow.normalBias = 0.025;
+    key.shadow.radius = 3;
+    this.scene.add(key.target);
     this.scene.add(key);
+    this.renderer.info.autoReset = false;
+    const renderTarget = new THREE.WebGLRenderTarget(1, 1, {type: THREE.HalfFloatType, samples: 2});
+    this.composer = new EffectComposer(this.renderer, renderTarget);
+    this.composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.ao = new SSAOPass(this.scene, this.camera, 512, 512, 8);
+    this.ao.kernelRadius = 0.35;
+    this.ao.minDistance = 0.0002;
+    this.ao.maxDistance = 0.004;
+    this.composer.addPass(this.ao);
+    this.composer.addPass(new OutputPass());
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.09;
@@ -160,6 +215,8 @@ export class SceneViewer {
     const width = parent?.clientWidth || this.canvas.clientWidth || 1;
     const height = parent?.clientHeight || this.canvas.clientHeight || 1;
     this.renderer.setSize(width, height, false);
+    this.composer?.setSize(width, height);
+    this.ao?.setSize(Math.max(1, Math.round(width * 0.7)), Math.max(1, Math.round(height * 0.7)));
     this.camera.aspect = width / Math.max(height, 1);
     this.camera.updateProjectionMatrix();
   }
@@ -177,11 +234,28 @@ export class SceneViewer {
       if (progress >= 1) this.cameraTween = undefined;
     }
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.info.reset();
+    // SSAOPass captures the projection at construction; room views change both FOV and depth range.
+    this.ao.ssaoMaterial.uniforms.cameraNear.value = this.camera.near;
+    this.ao.ssaoMaterial.uniforms.cameraFar.value = this.camera.far;
+    this.ao.ssaoMaterial.uniforms.cameraProjectionMatrix.value.copy(this.camera.projectionMatrix);
+    this.ao.ssaoMaterial.uniforms.cameraInverseProjectionMatrix.value.copy(this.camera.projectionMatrixInverse);
+    this.ao.enabled = !!this.content && this.renderMode !== 'section' && this.qualityStep < 2;
+    this.composer.render();
     const now = performance.now();
-    if (this.firstFrameMs === undefined) this.firstFrameMs = now - this.startedAt;
+    if (this.content && !this.loading && this.firstFrameMs === undefined) this.firstFrameMs = now - this.startedAt;
     this.frameTimes.push(now);
     while (this.frameTimes.length && this.frameTimes[0] < now - 1000) this.frameTimes.shift();
+    if (this.content && !this.loading && document.visibilityState === 'visible' && now - this.startedAt > 4000 && this.frameTimes.length < 28) {
+      this.slowSince ??= now;
+      if (now - this.slowSince > 2500 && this.qualityStep < 2) {
+        this.qualityStep++;
+        this.renderer.setPixelRatio(1);
+        this.composer.setPixelRatio(1);
+        this.resize();
+        this.slowSince = undefined;
+      }
+    } else this.slowSince = undefined;
   };
 
   private transitionCamera(position: THREE.Vector3, target: THREE.Vector3, fov = this.camera.fov): void {
@@ -298,8 +372,21 @@ export class SceneViewer {
       this.prepareObjectMaterials(instance);
       group.add(instance);
     }
+    this.addContactShadow(group, prototype);
     this.setTransform(group, item.position, item.rotation);
     return group;
+  }
+
+  private addContactShadow(group: THREE.Group, prototype?: THREE.Object3D): void {
+    if (!prototype) return;
+    const box = new THREE.Box3().setFromObject(prototype);
+    const size = box.getSize(new THREE.Vector3());
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(size.x * 1.3, size.z * 1.3), new THREE.MeshBasicMaterial({map: this.contactTexture, transparent: true, depthWrite: false, toneMapped: false}));
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.024;
+    shadow.userData.ignorePick = true;
+    shadow.renderOrder = 1;
+    group.add(shadow);
   }
 
   private prepareObjectMaterials(object: THREE.Object3D): void {
@@ -307,8 +394,15 @@ export class SceneViewer {
       if (!(node as THREE.Mesh).isMesh) return;
       const mesh = node as THREE.Mesh;
       const sourceMaterials = materialList(mesh.material);
+      mesh.castShadow = sourceMaterials.every((material) => !material.transparent);
+      mesh.receiveShadow = true;
       const modes: MaterialModes[] = sourceMaterials.map((source) => {
         const original = source.clone();
+        if ((original as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+          const pbr = original as THREE.MeshStandardMaterial;
+          pbr.envMapIntensity = pbr.metalness > 0.3 ? 0.85 : 0.28;
+          if (pbr.map) pbr.map.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
+        }
         const white = createWhiteMaterial(original);
         const section = white.clone();
         section.color.copy(SECTION_COLOR);
@@ -328,6 +422,10 @@ export class SceneViewer {
   }
 
   async loadBundle(bundle: ModelBundle, items: FurnitureState[]): Promise<void> {
+    this.startedAt = performance.now();
+    this.loading = true;
+    this.firstFrameMs = undefined;
+    this.roomView = undefined;
     const previousSharedNames = this.sharedMaterialNames;
     const previousSharedMaterials = this.sharedMaterials;
     this.sharedMaterialNames = new Set((bundle.manifest.sharedMaterialNames ?? []).filter(Boolean));
@@ -336,6 +434,7 @@ export class SceneViewer {
     try {
       next = await this.buildContent(bundle, items);
     } catch (error) {
+      this.loading = false;
       this.sharedMaterialNames = previousSharedNames;
       this.sharedMaterials = previousSharedMaterials;
       throw error;
@@ -345,14 +444,16 @@ export class SceneViewer {
       this.disposeContent(this.content, previousSharedMaterials);
     }
     this.content = next;
+    this.loading = false;
     this.bundle = bundle;
     this.layoutItems = items;
     this.scene.add(next.root);
+    this.renderer.shadowMap.needsUpdate = true;
     this.selectedId = undefined;
     this.callbacks.onSelect?.(undefined);
     const { center, radius } = centerAndRadius(bundle);
-    this.camera.near = Math.max(0.01, radius / 1000);
-    this.camera.far = Math.max(100, radius * 20);
+    this.camera.near = 0.08;
+    this.camera.far = Math.max(100, radius * 5);
     this.camera.updateProjectionMatrix();
     this.camera.position.fromArray(bundle.manifest.overview.position);
     this.controls.target.fromArray(bundle.manifest.overview.target);
@@ -383,12 +484,14 @@ export class SceneViewer {
           this.prepareObjectMaterials(instance);
           group.add(instance);
         }
+        this.addContactShadow(group, nextPrototype);
         group.userData.variantId = item.variantId;
         this.applyMaterialToObject(group);
       }
       this.setTransform(group, item.position, item.rotation);
     }
     this.applyMaterialToObject(content.root);
+    this.renderer.shadowMap.needsUpdate = true;
   }
 
   private updatePointer(event: PointerEvent): void {
@@ -403,6 +506,7 @@ export class SceneViewer {
     const visibleFurniture = [...this.content.furniture.values()].filter((group) => group.visible);
     const hits = this.raycaster.intersectObjects(visibleFurniture, true);
     const hit = hits.find((candidate) => {
+      if (candidate.object.userData.ignorePick) return false;
       let node: THREE.Object3D | null = candidate.object;
       while (node) {
         if (typeof node.userData.furnitureId === 'string') return true;
@@ -505,13 +609,14 @@ export class SceneViewer {
 
   private applyVisibility(): void {
     if (!this.content || !this.bundle) return;
+    this.renderer.shadowMap.needsUpdate = true;
     const floorIds = this.bundle.manifest.floors.map((floor) => floor.id);
     for (const floor of this.bundle.manifest.floors) {
       const content = this.content.floors.get(floor.id);
       if (!content) continue;
       const visible = this.viewMode === 'whole' || this.viewMode === floor.id;
       content.group.visible = visible;
-      if (content.ceiling) content.ceiling.visible = this.viewMode === 'whole';
+      if (content.ceiling) content.ceiling.visible = this.viewMode === 'whole' || this.roomView === floor.id;
     }
     if (this.content.environment) this.content.environment.visible = this.environmentVisible;
     if (this.content.exterior) this.content.exterior.visible = this.exteriorVisible && this.viewMode === 'whole';
@@ -522,13 +627,59 @@ export class SceneViewer {
   }
 
   setViewMode(mode: ViewMode): void {
+    this.roomView = undefined;
     this.viewMode = mode;
     this.applyVisibility();
+    if (this.renderMode === 'section') this.setSection(this.sectionDirection, this.sectionPosition);
   }
 
   setRenderMode(mode: RenderMode): void {
     this.renderMode = mode;
     this.applyRenderMode();
+    this.renderer.shadowMap.needsUpdate = true;
+    if (mode === 'section') {
+      this.roomView = undefined;
+      this.applyVisibility();
+      this.setSection(this.sectionDirection, this.sectionPosition, true);
+    } else if (this.sectionDetail) this.sectionDetail.visible = false;
+  }
+
+  setSection(direction: string, percent: number, focus = false): void {
+    if (!this.bundle) return;
+    this.sectionDirection = direction;
+    this.sectionPosition = Math.max(0, Math.min(100, percent));
+    const floors = this.bundle.manifest.floors.filter(f => this.viewMode === 'whole' || f.id === this.viewMode);
+    const all = floors.length ? floors : this.bundle.manifest.floors;
+    const minX = Math.min(...all.map(f => f.bounds[0])), maxX = Math.max(...all.map(f => f.bounds[2]));
+    const minZ = Math.min(...all.map(f => f.bounds[1])), maxZ = Math.max(...all.map(f => f.bounds[3]));
+    const isX = direction.endsWith('x'), sign = direction.startsWith('-') ? 1 : -1;
+    const min = isX ? minX : minZ, max = isX ? maxX : maxZ;
+    const value = min + (max - min) * this.sectionPosition / 100;
+    this.sectionPlane.normal.set(isX ? sign : 0, 0, isX ? 0 : sign);
+    this.sectionPlane.constant = -sign * value;
+    this.renderer.shadowMap.needsUpdate = true;
+    if (focus) {
+      const target = new THREE.Vector3((minX + maxX) / 2, all[0].elevation + all[0].height * .5, (minZ + maxZ) / 2);
+      const span = Math.max(maxX - minX, maxZ - minZ);
+      const offset = this.sectionPlane.normal.clone().multiplyScalar(-span * 2.6);
+      offset.y = span * .65;
+      this.transitionCamera(target.clone().add(offset), target, 24);
+    }
+    window.clearTimeout(this.sectionTimer);
+    this.sectionTimer = window.setTimeout(() => {
+      if (this.sectionDetail) {
+        this.scene.remove(this.sectionDetail);
+        this.sectionDetail.traverse(node => {
+          const drawable = node as THREE.Mesh;
+          drawable.geometry?.dispose();
+          if (drawable.material) materialList(drawable.material).forEach(m => m.dispose());
+        });
+      }
+      if (!this.content || this.renderMode !== 'section') return;
+      const visibleBases = [...this.content.floors.values()].filter(f => f.group.visible).map(f => f.base);
+      this.sectionDetail = createSectionDetail(visibleBases, this.sectionPlane);
+      this.scene.add(this.sectionDetail);
+    }, 80);
   }
 
   setEnvironmentVisible(visible: boolean): void {
@@ -544,6 +695,11 @@ export class SceneViewer {
   setEditMode(enabled: boolean): void {
     this.editMode = enabled;
     if (enabled) {
+      this.cameraTween = undefined;
+      this.camera.fov = 42;
+      this.camera.updateProjectionMatrix();
+      this.roomView = undefined;
+      this.applyVisibility();
       this.focusEditTopDown();
       this.controls.enableRotate = false;
     } else {
@@ -595,6 +751,8 @@ export class SceneViewer {
     const room = this.bundle?.manifest.rooms.find((candidate) => candidate.id === roomId);
     if (!room) return;
     this.setViewMode(room.floorId);
+    this.roomView = room.id === 'garden' ? undefined : room.floorId;
+    this.applyVisibility();
     this.camera.fov = room.camera.fov ?? 42;
     this.camera.updateProjectionMatrix();
     this.transitionCamera(new THREE.Vector3().fromArray(room.camera.position), new THREE.Vector3().fromArray(room.camera.target), room.camera.fov ?? 42);
@@ -653,6 +811,8 @@ export class SceneViewer {
   dispose(): void {
     this.resizeObserver?.disconnect();
     this.renderer.dispose();
+    this.composer.dispose();
+    this.ao.dispose();
     if (this.content) this.disposeContent(this.content);
   }
 }
