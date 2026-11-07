@@ -808,9 +808,31 @@ export class SceneViewer {
   }
 
   private disposeContent(content: SceneContent, sharedMaterials = this.sharedMaterials): void {
+    const textures = new Set<THREE.Texture>();
+    const collect = (material: THREE.Material) => Object.values(material).forEach(value => {
+      if (value instanceof THREE.Texture && value !== this.contactTexture) textures.add(value);
+    });
+    [content.root, ...content.prototypes.values()].forEach(root => root.traverse(node => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      materialList(mesh.material).forEach(collect);
+      const modes = mesh.userData.viewerMaterialModes as MaterialModes[] | undefined;
+      modes?.forEach(mode => [mode.original, mode.white, mode.section].forEach(collect));
+    }));
+    sharedMaterials.forEach(collect);
     this.disposeObject(content.root);
     content.prototypes.forEach((prototype) => this.disposeObject(prototype));
     sharedMaterials.forEach((material) => material.dispose());
+    textures.forEach(texture => texture.dispose());
+  }
+
+  clearBundle(): void {
+    if (this.content) { this.scene.remove(this.content.root); this.disposeContent(this.content); }
+    this.content = undefined;
+    this.bundle = undefined;
+    this.layoutItems = [];
+    this.sharedMaterials.clear();
+    if (this.sectionDetail) this.sectionDetail.visible = false;
   }
 
   dispose(): void {

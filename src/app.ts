@@ -219,6 +219,7 @@ export class ViewerApp {
     await this.enqueue(async () => {
       const previousBundle = this.bundle;
       const previousItems = this.items.map((item) => ({ ...item, position: [...item.position] as Vec3Tuple }));
+      let sceneReplaced = false;
       try {
         const parsed = parseBundleZip(await file.arrayBuffer());
         if (!parsed.validation.ok || !parsed.bundle) {
@@ -228,14 +229,9 @@ export class ViewerApp {
         const nextBundle = parsed.bundle;
         const nextItems = this.toState(nextBundle.manifest);
         const nextLayout = manifestToLayout(nextBundle.manifest);
+        await this.viewer.loadBundle(nextBundle, nextItems);
+        sceneReplaced = true;
         await viewerStorage.saveProjectAndLayout(nextBundle, nextLayout);
-        try {
-          await this.viewer.loadBundle(nextBundle, nextItems);
-        } catch (error) {
-          if (previousBundle) await viewerStorage.saveProjectAndLayout(previousBundle, stateToLayout(previousItems, previousBundle.manifest));
-          else await viewerStorage.clear();
-          throw error;
-        }
         this.bundle = nextBundle;
         this.items = nextItems;
         this.initialItems = this.toState(nextBundle.manifest);
@@ -247,8 +243,10 @@ export class ViewerApp {
         const notices = [...parsed.validation.warnings];
         this.showToast(`已导入「${nextBundle.manifest.name}」${notices.length ? `；${notices.join('；')}` : ''}`, notices.length ? 'warning' : 'success');
       } catch (error) {
-        if (previousBundle && this.bundle !== previousBundle) {
-          try { await this.viewer.loadBundle(previousBundle, previousItems); } catch { /* preserve original error */ }
+        if (sceneReplaced) {
+          if (previousBundle) {
+            try { await this.viewer.loadBundle(previousBundle, previousItems); } catch { /* preserve original error */ }
+          } else this.viewer.clearBundle();
         }
         this.showToast(`导入失败，当前项目未改变：${this.errorMessage(error)}`, 'error');
       }
